@@ -18,19 +18,15 @@ func parseCommand(rawRequest string) string {
 	}
 }
 
-func handleSingleConnection(l net.Listener) {
-	c, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
-
+func handleSingleConnection(c net.Conn) {
 	for {
 		buf := make([]byte, 1024)
 		byteSize, err := c.Read(buf)
 		if err != nil {
 			if err.Error() == "EOF" {
-				fmt.Println("Connection closed from client, waiting for new connection....")
+				fmt.Println("Connection closed from client.")
+				c.Close()
+				return
 			} else {
 				fmt.Println("Error reading: ", err.Error())
 				return
@@ -61,5 +57,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	handleSingleConnection(l)
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+
+		go handleSingleConnection(c)
+	}
 }
