@@ -6,10 +6,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
+type RedisStoreDataItem struct {
+	Value            string
+	CreatedTimestamp time.Time
+	Expiry           int
+	ExpiredTimestamp *time.Time
+}
+
 type RedisStore struct {
-	Data map[string]string
+	Data map[string]RedisStoreDataItem
 }
 
 // Implement Redis Protocol Parser
@@ -36,8 +44,9 @@ func parseRequest(request string) RedisRequest {
 		}
 	}
 
+	upperCaseCommand := strings.ToUpper(arguments[0])
 	return RedisRequest{
-		Command: arguments[0],
+		Command: upperCaseCommand,
 		Args:    arguments[1:],
 	}
 
@@ -54,17 +63,58 @@ func constructEchoResponse(args []string) string {
 	return response
 }
 
-func handleSetCommand(store *RedisStore, args []string) error {
-	store.Data[args[0]] = args[1]
+func handleSetCommand(store *RedisStore, args []string) (err error) {
+	var expiryTime int
+	// Handle expiry (PX argument)
+	if len(args) == 4 {
+		// Check if the argument is PX
+		if strings.ToUpper(args[2]) == "PX" {
+			// Get the expiry time
+			expiryTime, err = strconv.Atoi(args[3])
+			if err != nil {
+				return fmt.Errorf("Invalid expiry time")
+			}
+		} else {
+			return fmt.Errorf("Invalid argument")
+		}
+	}
+
+	// Determine expired timestamp
+	var expiredTimestamp *time.Time
+	if expiryTime != 0 {
+		e := time.Now().Add(time.Duration(expiryTime) * time.Millisecond)
+		expiredTimestamp = &e
+	}
+
+	store.Data[args[0]] = RedisStoreDataItem{
+		Value:            args[1],
+		CreatedTimestamp: time.Now(),
+		Expiry:           expiryTime,
+		ExpiredTimestamp: expiredTimestamp,
+	}
+
 	return nil
 }
+
+var KEY_HAS_EXPIRED_ERROR = fmt.Errorf("KEY_HAS_EXPIRED_ERROR")
+var ENCODED_NULL_BYTE = []byte("$-1\r\n")
 
 func handleGetCommand(store *RedisStore, key string) (string, error) {
 	value, ok := store.Data[key]
 	if !ok {
-		return "", fmt.Errorf("Key not found")
+		return "", nil
 	}
-	return value, nil
+
+	// Check if the key has expired
+	if value.ExpiredTimestamp != nil {
+		if time.Now().After(*value.ExpiredTimestamp) {
+			delete(store.Data, key)
+			return "", KEY_HAS_EXPIRED_ERROR
+		}
+	}
+
+	return value.Value, nil
+
 }
 
 func handleSingleConnection(c net.Conn, store *RedisStore) {
@@ -98,10 +148,6 @@ func handleSingleConnection(c net.Conn, store *RedisStore) {
 			echoResponse := constructEchoResponse(parsedRequest.Args)
 			c.Write([]byte(echoResponse))
 		case "SET":
-			if len(parsedRequest.Args) != 2 {
-				c.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
-				continue
-			}
 			err := handleSetCommand(store, parsedRequest.Args)
 			if err != nil {
 				c.Write([]byte("-ERR " + err.Error() + "\r\n"))
@@ -115,7 +161,11 @@ func handleSingleConnection(c net.Conn, store *RedisStore) {
 			}
 			value, err := handleGetCommand(store, parsedRequest.Args[0])
 			if err != nil {
-				c.Write([]byte("-ERR " + err.Error() + "\r\n"))
+				if err == KEY_HAS_EXPIRED_ERROR {
+					c.Write(ENCODED_NULL_BYTE)
+				} else {
+					c.Write([]byte("-ERR " + err.Error() + "\r\n"))
+				}
 			} else {
 				c.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)))
 			}
@@ -135,7 +185,7 @@ func main() {
 	defer l.Close()
 
 	store := RedisStore{
-		Data: make(map[string]string),
+		Data: make(map[string]RedisStoreDataItem),
 	}
 
 	for {
