@@ -4,18 +4,50 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 )
 
-// TODO: Implement a function that parses the incoming request and returns the command
-func parseCommand(rawRequest string) string {
-	switch rawRequest {
-	case "*1\r\n$4\r\nPING\r\n":
-		return "PING"
-	case "*1\r\n$4\r\nQUIT\r\n":
-		return "QUIT"
-	default:
-		return rawRequest
+// Implement Redis Protocol Parser
+type RedisRequest struct {
+	Command string
+	Args    []string
+}
+
+func parseRequest(request string) RedisRequest {
+	// Get the number of arguments, we parse number after * until \r\n
+	// Iterate over the request and parse the arguments
+	var arguments []string
+	for i := 0; i < len(request); i++ {
+		if request[i] == '$' {
+			// Get the length of the argument
+			for j := i + 1; j < len(request); j++ {
+				if request[j] == '\r' {
+					argLength, _ := strconv.Atoi(request[i+1 : j])
+					i = j + 2
+					arguments = append(arguments, request[j+2:j+2+argLength])
+					break
+				}
+			}
+		}
 	}
+
+	return RedisRequest{
+		Command: arguments[0],
+		Args:    arguments[1:],
+	}
+
+}
+
+func constructEchoResponse(args []string) string {
+	responseStringArray := []string{}
+	for _, arg := range args {
+		responseStringArray = append(responseStringArray, fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+	}
+
+	response := strings.Join(responseStringArray, "")
+	fmt.Println("Response: ", response)
+	return response
 }
 
 func handleSingleConnection(c net.Conn) {
@@ -34,16 +66,20 @@ func handleSingleConnection(c net.Conn) {
 		}
 
 		incomingRawRequest := string(buf[:byteSize])
-		fmt.Println("Received Request: ", incomingRawRequest)
+		fmt.Println("Incoming Request: ", incomingRawRequest)
+		parsedRequest := parseRequest(incomingRawRequest)
+		fmt.Println("Parsed Request: ", parsedRequest)
 
-		parsedCommand := parseCommand(incomingRawRequest)
-		switch parsedCommand {
+		switch parsedRequest.Command {
 		case "PING":
 			c.Write([]byte("+PONG\r\n"))
 		case "QUIT":
 			c.Write([]byte("+OK\r\n"))
 			c.Close()
 			return
+		case "ECHO":
+			echoResponse := constructEchoResponse(parsedRequest.Args)
+			c.Write([]byte(echoResponse))
 		default:
 			c.Write([]byte("-ERR unknown command\r\n"))
 		}
