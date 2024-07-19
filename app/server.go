@@ -18,20 +18,14 @@ func parseCommand(rawRequest string) string {
 	}
 }
 
-func main() {
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
+func handleSingleConnection(l net.Listener) {
+	c, err := l.Accept()
 	if err != nil {
-		fmt.Println("Failed to bind to port 6379")
+		fmt.Println("Error accepting connection: ", err.Error())
 		os.Exit(1)
 	}
 
 	for {
-		c, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
-		}
-
 		buf := make([]byte, 1024)
 		byteSize, err := c.Read(buf)
 		if err != nil {
@@ -58,4 +52,14 @@ func main() {
 			c.Write([]byte("-ERR unknown command\r\n"))
 		}
 	}
+}
+
+func main() {
+	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	if err != nil {
+		fmt.Println("Failed to bind to port 6379")
+		os.Exit(1)
+	}
+
+	handleSingleConnection(l)
 }
