@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+type RedisStore struct {
+	Data map[string]string
+}
+
 // Implement Redis Protocol Parser
 type RedisRequest struct {
 	Command string
@@ -50,7 +54,20 @@ func constructEchoResponse(args []string) string {
 	return response
 }
 
-func handleSingleConnection(c net.Conn) {
+func handleSetCommand(store *RedisStore, args []string) error {
+	store.Data[args[0]] = args[1]
+	return nil
+}
+
+func handleGetCommand(store *RedisStore, key string) (string, error) {
+	value, ok := store.Data[key]
+	if !ok {
+		return "", fmt.Errorf("Key not found")
+	}
+	return value, nil
+}
+
+func handleSingleConnection(c net.Conn, store *RedisStore) {
 	for {
 		buf := make([]byte, 1024)
 		byteSize, err := c.Read(buf)
@@ -80,6 +97,28 @@ func handleSingleConnection(c net.Conn) {
 		case "ECHO":
 			echoResponse := constructEchoResponse(parsedRequest.Args)
 			c.Write([]byte(echoResponse))
+		case "SET":
+			if len(parsedRequest.Args) != 2 {
+				c.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
+				continue
+			}
+			err := handleSetCommand(store, parsedRequest.Args)
+			if err != nil {
+				c.Write([]byte("-ERR " + err.Error() + "\r\n"))
+			} else {
+				c.Write([]byte("+OK\r\n"))
+			}
+		case "GET":
+			if len(parsedRequest.Args) != 1 {
+				c.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
+				continue
+			}
+			value, err := handleGetCommand(store, parsedRequest.Args[0])
+			if err != nil {
+				c.Write([]byte("-ERR " + err.Error() + "\r\n"))
+			} else {
+				c.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)))
+			}
 		default:
 			c.Write([]byte("-ERR unknown command\r\n"))
 		}
@@ -93,6 +132,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	defer l.Close()
+
+	store := RedisStore{
+		Data: make(map[string]string),
+	}
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -100,6 +145,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		go handleSingleConnection(c)
+		go handleSingleConnection(c, &store)
 	}
 }
